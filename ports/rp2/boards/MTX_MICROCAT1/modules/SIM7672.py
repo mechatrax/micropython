@@ -108,7 +108,7 @@ class modem:
             return s
         return None
 
-    def __expect(self, exp, aborts=('ERROR'), timeout=10000):
+    def __expect(self, exp, aborts=('ERROR',), timeout=10000):
         deadline = time.ticks_add(time.ticks_ms(), timeout)
         while time.ticks_diff(deadline, time.ticks_ms()) > 0:
             rcv = self.__receive(timeout)
@@ -154,7 +154,7 @@ class modem:
             return False
         return True
 
-    def __command_and_expect(self, cmd, exp=None, aborts=('ERROR'), command_timeout=1000, expect_timeout=10000):
+    def __command_and_expect(self, cmd, exp=None, aborts=('ERROR',), command_timeout=1000, expect_timeout=10000):
         if not self.__command(cmd, timeout=command_timeout):
             return False
         if exp is None:
