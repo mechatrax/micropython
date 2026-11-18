@@ -34,7 +34,7 @@ PDP_NONIP = 'Non-IP'
 
 
 class modem:
-    def __init__(self, uart=UART(1), baudrate=__DEFAULT_BAUDRATE, handshake=True, led=Pin(__GPIO_LED_PIN), debug=False, quirk_reset_rpm=True):
+    def __init__(self, uart=UART(1), baudrate=__DEFAULT_BAUDRATE, handshake=True, led=Pin(__GPIO_LED_PIN), debug=False, quirk_reset_rpm=True, timer=Timer()):
         if debug:
             self.__dbg_print = print
         else:
@@ -67,10 +67,11 @@ class modem:
         self.__dialup_delay = 500
         self.__ppp = PPP(self.__uart)
         self.led = led
+        self.timer = timer
+        self.timer.deinit()
         if not self.led:
             return
         self.led.init(Pin.OUT)
-        self.timer = Timer()
         self.timer.init(freq=2, callback=self.__create_timer_handler())
 
     def __create_timer_handler(self):
