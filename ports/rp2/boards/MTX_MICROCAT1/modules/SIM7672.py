@@ -34,7 +34,7 @@ PDP_NONIP = 'Non-IP'
 
 
 class modem:
-    def __init__(self, uart=UART(1), baudrate=__DEFAULT_BAUDRATE, handshake=True, led=Pin(__GPIO_LED_PIN), debug=False):
+    def __init__(self, uart=UART(1), baudrate=__DEFAULT_BAUDRATE, handshake=True, led=Pin(__GPIO_LED_PIN), debug=False, quirk_reset_rpm=True, timer=Timer()):
         if debug:
             self.__dbg_print = print
         else:
@@ -62,14 +62,16 @@ class modem:
         )
         self.__baudrate = baudrate
         self.__handshake = handshake
+        self.__quirk_reset_rpm = quirk_reset_rpm
         self.__dialup_retries = 60
         self.__dialup_delay = 500
         self.__ppp = PPP(self.__uart)
         self.led = led
+        self.timer = timer
+        self.timer.deinit()
         if not self.led:
             return
         self.led.init(Pin.OUT)
-        self.timer = Timer()
         self.timer.init(freq=2, callback=self.__create_timer_handler())
 
     def __create_timer_handler(self):
@@ -108,7 +110,7 @@ class modem:
             return s
         return None
 
-    def __expect(self, exp, aborts=('ERROR'), timeout=10000):
+    def __expect(self, exp, aborts=('ERROR',), timeout=10000):
         deadline = time.ticks_add(time.ticks_ms(), timeout)
         while time.ticks_diff(deadline, time.ticks_ms()) > 0:
             rcv = self.__receive(timeout)
@@ -124,15 +126,15 @@ class modem:
         while True:
             result = self.__receive(timeout)
             if result is None:
-                return None
+                return None, None
             if result.startswith(header):
                 try:
-                    return result.split(':', 1)[1].lstrip()
+                    return result.split(':', 1)[1].lstrip(), None
                 finally:
                     self.__expect('OK', timeout=timeout)
             for abort in aborts:
                 if abort in result:
-                    return None
+                    return None, result
 
     def __send(self, cmd, timeout=1000):
         if isinstance(cmd, str):
@@ -154,7 +156,7 @@ class modem:
             return False
         return True
 
-    def __command_and_expect(self, cmd, exp=None, aborts=('ERROR'), command_timeout=1000, expect_timeout=10000):
+    def __command_and_expect(self, cmd, exp=None, aborts=('ERROR',), command_timeout=1000, expect_timeout=10000):
         if not self.__command(cmd, timeout=command_timeout):
             return False
         if exp is None:
@@ -163,22 +165,47 @@ class modem:
 
     def __query_and_result(self, cmd, aborts=('ERROR', 'OK'), command_timeout=1000, result_timeout=1000):
         if cmd[:3] != "AT+" or cmd[-1] != "?":
-            return None
+            return None, None
         header = cmd[2:-1] + ":"
         if not self.__command(cmd, timeout=command_timeout):
-            return None
+            return None, None
         return self.__receive_result(header, aborts, timeout=result_timeout)
 
+    def __should_check_rpm(self, err):
+        if not self.__quirk_reset_rpm:
+            return False
+        if err != '+CME ERROR: SIM failure':
+            return False
+        return True
+
+    def __is_rpm_enabled(self):
+        value, _ = self.__query_and_result('AT+RPMPARAM?')
+        if value is None:
+            return False
+        return value.split(',')[0].strip() == '1'
+
+    def __reset_rpm(self):
+        self.__dbg_print('RESET RPM')
+        self.__command_and_expect('AT+RPMPARAM=0', 'OK')
+        self.__command_and_expect('AT+CFUN=4', 'OK')
+        self.__command_and_expect('AT+CFUN=1', 'OK', expect_timeout=30000)
+
     def __wait_pin(self, retries=20, delay=500):
+        rpm_checked = False
         for _ in range(retries):
-            if self.__query_and_result('AT+CPIN?', command_timeout=5000) == 'READY':
+            value, err = self.__query_and_result('AT+CPIN?', command_timeout=5000)
+            if value == 'READY':
                 return True
+            if not rpm_checked and self.__should_check_rpm(err):
+                rpm_checked = True
+                if self.__is_rpm_enabled():
+                    self.__reset_rpm()
             time.sleep_ms(delay)
         return False
 
     def __wait_reg(self, retries, delay):
         for _ in range(retries):
-            value = self.__query_and_result('AT+CEREG?')
+            value, _ = self.__query_and_result('AT+CEREG?')
             if value is not None:
                 try:
                     if int(value.split(',')[1]) in (1, 5):
@@ -329,7 +356,7 @@ class modem:
                     time.sleep(1)
                 if not self.__command_and_expect('AT', 'OK'):
                     return False
-        value = self.__query_and_result('AT+CEREG?')
+        value, _ = self.__query_and_result('AT+CEREG?')
         if value is None:
             return False
         try:
@@ -339,7 +366,7 @@ class modem:
         if cereg_mode != 0:
             if not self.__command_and_expect('AT+CREG=0', 'OK'):
                 return False
-        value = self.__query_and_result('AT+IFC?')
+        value, _ = self.__query_and_result('AT+IFC?')
         if value is None:
             return False
         current_flowcontrol = value
@@ -355,7 +382,7 @@ class modem:
                     return False
                 self.__uart.init(flow=0)
                 self.__clear_buffers()
-        value = self.__query_and_result('AT+IPR?')
+        value, _ = self.__query_and_result('AT+IPR?')
         if value is None:
             return False
         try:
